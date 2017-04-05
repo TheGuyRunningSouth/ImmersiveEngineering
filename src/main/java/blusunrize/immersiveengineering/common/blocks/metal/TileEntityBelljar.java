@@ -54,7 +54,14 @@ public class TileEntityBelljar extends TileEntityIEBase implements ITickable, ID
 	public EnumFacing facing = EnumFacing.NORTH;
 	public int dummy = 0;
 	private ItemStack[] inventory = new ItemStack[7];
-	public FluidTank tank = new FluidTank(4000);
+	public FluidTank tank = new FluidTank(4000)
+	{
+		@Override
+		protected void onContentsChanged()
+		{
+			TileEntityBelljar.this.sendSyncPacket(2);
+		}
+	};
 	public FluxStorage energyStorage = new FluxStorage(16000,Math.max(256,IEConfig.Machines.belljar_consumption));
 
 	private IPlantHandler curPlantHandler;
@@ -62,6 +69,7 @@ public class TileEntityBelljar extends TileEntityIEBase implements ITickable, ID
 	public float fertilizerMod = 1;
 	private float growth = 0;
 	public float renderGrowth = 0;
+	public boolean renderActive = false;
 
 	@Override
 	public void update()
@@ -70,7 +78,7 @@ public class TileEntityBelljar extends TileEntityIEBase implements ITickable, ID
 			return;
 		if(getWorld().isRemote)
 		{
-			if(energyStorage.getEnergyStored()>IEConfig.Machines.belljar_consumption && fertilizerAmount>0)
+			if(energyStorage.getEnergyStored()>IEConfig.Machines.belljar_consumption && fertilizerAmount>0 && renderActive)
 			{
 				IPlantHandler handler = getCurrentPlantHandler();
 				if(handler!=null&&handler.isCorrectSoil(inventory[1], inventory[0]) && fertilizerAmount>0)
@@ -99,8 +107,7 @@ public class TileEntityBelljar extends TileEntityIEBase implements ITickable, ID
 				IPlantHandler handler = getCurrentPlantHandler();
 				if(handler!=null&&handler.isCorrectSoil(inventory[1], inventory[0]) && fertilizerAmount>0 && energyStorage.extractEnergy(IEConfig.Machines.belljar_consumption, true)==IEConfig.Machines.belljar_consumption)
 				{
-					energyStorage.extractEnergy(IEConfig.Machines.belljar_consumption, false);
-					fertilizerAmount--;
+					boolean consume = false;
 					if(growth >= 1)
 					{
 						ItemStack[] outputs = handler.getOutput(inventory[1], inventory[0], this);
@@ -127,13 +134,30 @@ public class TileEntityBelljar extends TileEntityIEBase implements ITickable, ID
 									}
 								}
 							growth = handler.resetGrowth(inventory[1], inventory[0], growth, this, false);
+							consume = true;
 						}
 					}
 					else if(growth < 1)
 					{
 						growth += handler.getGrowthStep(inventory[1], inventory[0], growth, this, fertilizerMod, false);
-						if(worldObj.getTotalWorldTime()%32==((getPos().getX()^getPos().getZ())&32))
+						consume = true;
+						if(worldObj.getTotalWorldTime()%32==((getPos().getX()^getPos().getZ())&31))
 							sendSyncPacket(0);
+					}
+					if(consume)
+					{
+						energyStorage.extractEnergy(IEConfig.Machines.belljar_consumption, false);
+						fertilizerAmount--;
+						if(!renderActive)
+						{
+							renderActive = true;
+							sendSyncPacket(0);
+						}
+					}
+					else if(renderActive)
+					{
+						renderActive = false;
+						sendSyncPacket(0);
 					}
 				}
 				else
@@ -194,7 +218,11 @@ public class TileEntityBelljar extends TileEntityIEBase implements ITickable, ID
 	{
 		NBTTagCompound nbt = new NBTTagCompound();
 		if(type==0)
+		{
 			nbt.setFloat("growth", growth);
+			nbt.setInteger("energy", energyStorage.getEnergyStored());
+			nbt.setBoolean("renderActive", renderActive);
+		}
 		else if(type==1)
 		{
 			nbt.setInteger("fertilizerAmount", fertilizerAmount);
@@ -202,13 +230,17 @@ public class TileEntityBelljar extends TileEntityIEBase implements ITickable, ID
 		}
 		else if(type==2)
 			nbt.setTag("tank", tank.writeToNBT(new NBTTagCompound()));
-		ImmersiveEngineering.packetHandler.sendToAllAround(new MessageTileSync(this, nbt), new TargetPoint(getWorld().provider.getDimension(),getPos().getX(),getPos().getY(),getPos().getZ(), 128));
+		ImmersiveEngineering.packetHandler.sendToAllAround(new MessageTileSync(this, nbt), new TargetPoint(worldObj.provider.getDimension(),getPos().getX(), getPos().getY(), getPos().getZ(), 128));
 	}
 	@Override
 	public void receiveMessageFromServer(NBTTagCompound message)
 	{
 		if(message.hasKey("growth"))
 			renderGrowth = message.getFloat("growth");
+		if(message.hasKey("renderActive"))
+			renderActive = message.getBoolean("renderActive");
+		if(message.hasKey("energy"))
+			energyStorage.setEnergy(message.getInteger("energy"));
 		if(message.hasKey("fertilizerAmount"))
 			fertilizerAmount = message.getInteger("fertilizerAmount");
 		if(message.hasKey("fertilizerMod"))
@@ -397,7 +429,7 @@ public class TileEntityBelljar extends TileEntityIEBase implements ITickable, ID
 	@SideOnly(Side.CLIENT)
 	public boolean shouldRenderGroup(IBlockState object, String group)
 	{
-		return !"extension".equals(group) ;//&& !"base_glass".equals(group);
+		return !"glass".equals(group);
 	}
 	@Override
 	@SideOnly(Side.CLIENT)
